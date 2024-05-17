@@ -2,31 +2,27 @@
 # PoC on-the-fly RPKI validation of announced IPv4 BGP prefixes
 # requires https://github.com/NLnetLabs/routinator
 
-import sys
-import lib
-
-# routinator HTTP service root URL
-URL = "http://127.0.0.1:31339"
+import sys, lib, json
 
 for line in sys.stdin:
-	# parse or accept line as-is
-	line = line.strip()
-	msg, origin = lib.msg_from_json(line)
-	if not msg:
-		lib.msg_accept(line)
-		continue
+	try:
+		# parse the message
+		msg = lib.parse_json(line)
 
-	# validate each prefix
-	ok, invalid = [], []
-	for pfx in msg[5]["reach"]:
-		invalid.append(pfx) if lib.is_invalid(URL, origin, pfx) else ok.append(pfx)
+		# validate each prefix against the origin AS
+		origin = int(msg[5]["attrs"]["ASPATH"]["value"][-1])
+		ok, fail = [], []
+		for pfx in msg[5]["reach"]:
+			ok.append(pfx) if lib.rpki_check(origin, pfx) \
+				else fail.append(pfx)
 
-	# all prefixes good? accept line as-is
-	if len(invalid) == 0:
-		lib.msg_accept(line)
-		continue
+		# all prefixes ok?
+		if len(fail) == 0:
+			raise # accept as-is
 
-	# treat invalid prefixes as withdrawn, rfc7606 style
-	msg[5]["reach"] = ok
-	msg[5]["unreach"].extend(invalid)
-	lib.msg_rewrite(msg)
+		# treat failed prefixes as withdrawn, like rfc7606
+		msg[5]["reach"] = ok
+		msg[5]["unreach"].extend(fail)
+		print(json.dumps(msg), flush=True) # modify the original message
+	except:
+		print(line, end="", flush=True)    # accept the message as-is
